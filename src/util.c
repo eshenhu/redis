@@ -44,6 +44,11 @@
 #include "util.h"
 #include "sha256.h"
 
+static int matchstar(char* p_txt, char* p_reg);
+static int matchhere(char* p_txt, char* p_reg);
+static int matchraw(const char* p_txt, const char* p_reg);
+static bool strcasecmpUntilDelim(const char* p, const char* t, char delim);
+
 /* Glob-style pattern matching. */
 int stringmatchlen(const char *pattern, int patternLen,
         const char *string, int stringLen, int nocase)
@@ -770,6 +775,90 @@ int pathIsBaseName(char *path) {
     return strchr(path,'/') == NULL && strchr(path,'\\') == NULL;
 }
 
+char* iterNextToken(char* src, char** ppsave, char token) {
+    if (src) {
+        while(*src == token) ++src;
+        *ppsave = src;
+    }
+    char* save = *ppsave;
+    char* p = *ppsave;
+    if (*p == '\0') return NULL;
+    for (; ; ++p) {
+        if (*p == '\0') {
+            *ppsave = p;
+            break;
+        }
+        if (*p == token) {
+            while(*p == token) {
+                ++p;
+            }
+            *ppsave = p;
+            break;
+        }
+    }
+    return save;
+}
+
+/* For support filter functionality */
+static char* gp_txt = NULL;
+static char* gp_reg = NULL;
+
+int matchhere(char* p_txt, char* p_reg) {
+    bool r1 = (p_txt == NULL);
+    bool r2 = (p_reg == NULL);
+    if (r1 && r2) return 0;
+    if (r1 || r2) return 1;
+
+    if (*p_reg == '#' && (*(p_reg+1) == '\0' || *(p_reg+1) == '/'))
+        return matchhere(iterNextToken(NULL, &gp_txt, '/'), iterNextToken(NULL, &gp_reg, '/'));
+
+    if (*p_reg == '*' && (*(p_reg+1) == '\0' || *(p_reg+1) == '/'))
+        return matchstar(p_txt, iterNextToken(NULL, &gp_reg, '/'));
+
+    // only string left.
+    if (strcasecmpUntilDelim(p_txt, p_reg, '/'))
+        return 1;
+    return matchhere(iterNextToken(NULL, &gp_txt, '/'), iterNextToken(NULL, &gp_reg, '/'));
+}
+
+int matchstar(char* p_txt, char* p_reg) {
+    bool r1 = (p_txt == NULL);
+    bool r2 = (p_reg == NULL);
+    if (r2) return 0;
+    if (r1) return 1;
+
+    if (strcasecmpUntilDelim(p_txt, p_reg, '/'))
+        return matchstar(iterNextToken(NULL, &gp_txt, '/'), p_reg);
+    else
+        return matchhere(iterNextToken(NULL, &gp_txt, '/'), iterNextToken(NULL, &gp_reg, '/'));
+}
+
+int matchraw(const char* txt, const char* reg) {
+    return matchhere(iterNextToken((char*)txt, &gp_txt, '/'), iterNextToken((char*)reg, &gp_reg, '/'));
+}
+
+int match(const char* first, const char* last, const char* reg) {
+    static char cmp[64];
+    long n = last - first;
+    if (n <= 0 || n >= 63) return 1;
+
+    int i = 0;
+    for (; i < (int)n; i++)
+        cmp[i] = first[i];
+    cmp[i] = '\0';
+    
+    return matchraw(cmp, reg);
+}
+
+bool strcasecmpUntilDelim(const char* p, const char* t, char delim) {
+    for(; *p != '\0' && *t != '\0' && 
+          *p != delim && *t != delim && 
+          *p == *t; 
+        ++p, ++t) {
+    }
+    return *p != *t;
+}
+
 #ifdef REDIS_TEST
 #include <assert.h>
 
@@ -918,6 +1007,14 @@ static void test_ll2string(void) {
     assert(!strcmp(buf, "9223372036854775807"));
 }
 
+static void test_match(void) {
+    assert(!matchraw("/build/1/floor/2", "*/floor/*"));
+    assert(matchraw("/build/1/floor/2", "#/build/*"));
+    assert(!matchraw("/build/1/floor/2", "/build/*"));
+    assert(!matchraw("/build/1/floor/2", "*"));
+    assert(matchraw("/build/1/floor/2", "*b/floor/*"));
+}
+
 #define UNUSED(x) (void)(x)
 int utilTest(int argc, char **argv) {
     UNUSED(argc);
@@ -926,6 +1023,7 @@ int utilTest(int argc, char **argv) {
     test_string2ll();
     test_string2l();
     test_ll2string();
+    test_match();
     return 0;
 }
 #endif

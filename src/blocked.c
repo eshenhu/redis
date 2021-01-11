@@ -399,6 +399,7 @@ void serveClientsBlockedOnStreamKey(robj *o, readyList *rl) {
                     }
                 }
 
+                ReplyPrepare(receiver);
                 /* Emit the two elements sub-array consisting of
                  * the name of the stream and the data we
                  * extracted from it. Wrapped in a single-item
@@ -415,15 +416,21 @@ void serveClientsBlockedOnStreamKey(robj *o, readyList *rl) {
                     rl->key,
                     receiver->bpop.xread_group
                 };
-                streamReplyWithRange(receiver,s,&start,NULL,
+
+                int n = streamReplyWithRange(receiver,s,&start,NULL,
                                      receiver->bpop.xread_count,
                                      0, group, consumer, noack, &pi);
 
-                /* Note that after we unblock the client, 'gt'
-                 * and other receiver->bpop stuff are no longer
-                 * valid, so we must do the setup above before
-                 * this call. */
-                unblockClient(receiver);
+                if (n > 0) {
+                    ReplyCommit(receiver);
+                    /* Note that after we unblock the client, 'gt'
+                    * and other receiver->bpop stuff are no longer
+                    * valid, so we must do the setup above before
+                    * this call. */
+                    unblockClient(receiver);
+                } else {
+                    ReplyRollback(receiver);
+                }
             }
         }
     }

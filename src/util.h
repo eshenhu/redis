@@ -31,6 +31,7 @@
 #define __REDIS_UTIL_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "sds.h"
 
 /* The maximum number of characters needed to represent a long double
@@ -62,6 +63,7 @@ int ld2string(char *buf, size_t len, long double value, ld2string_mode mode);
 sds getAbsolutePath(char *filename);
 unsigned long getTimeZone(void);
 int pathIsBaseName(char *path);
+int match(const char* first, const char* last, const char* reg);
 
 #ifdef REDIS_TEST
 int utilTest(int argc, char **argv);

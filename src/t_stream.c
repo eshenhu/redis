@@ -30,6 +30,7 @@
 #include "server.h"
 #include "endianconv.h"
 #include "stream.h"
+#include <stdbool.h>
 
 /* Every stream item inside the listpack, has a flags field that is used to
  * mark the entry as deleted, or having the same field as the "master"
@@ -1113,6 +1114,7 @@ void streamPropagateConsumerCreation(client *c, robj *key, robj *groupname, sds 
 #define STREAM_RWR_RAWENTRIES (1<<1)    /* Do not emit protocol for array
                                            boundaries, just the entries. */
 #define STREAM_RWR_HISTORY (1<<2)       /* Only serve consumer local PEL. */
+
 size_t streamReplyWithRange(client *c, stream *s, streamID *start, streamID *end, size_t count, int rev, streamCG *group, streamConsumer *consumer, int flags, streamPropInfo *spi) {
     void *arraylen_ptr = NULL;
     size_t arraylen = 0;
@@ -1145,12 +1147,45 @@ size_t streamReplyWithRange(client *c, stream *s, streamID *start, streamID *end
             if (noack) propagate_last_id = 1;
         }
 
+        /* Only update when matching `filter` rules if client ask 
+         * We suppose the first key-value will always be present
+         * with format "routing_key" : "a.b.c.d" or "a.#.b.*" or "a"
+         * `#` : one word;
+         * `*` : any word;
+         * */
+        bool readfirstloop = false;
+        unsigned char *key, *value;
+        int64_t key_len, value_len; 
+
+        if (numfields >= 1 && c->bpop.xfilter[0] != '\0') {
+            readfirstloop = true;
+            streamIteratorGetField(&si,&key,&value,&key_len,&value_len);
+
+            serverLog(LL_NOTICE,"filter match : with %s", c->bpop.xfilter);
+
+            const int cmp_sz = sizeof("routing_key") - 1;
+            if (cmp_sz == key_len && !memcmp("routing_key", key, cmp_sz)) {
+                if (match((const char*)value, (const char*)(value+value_len), (char*)c->bpop.xfilter)) {
+                    serverLog(LL_NOTICE,"filter un-matched");
+                    numfields--;
+                    while(numfields--) streamIteratorGetField(&si,&key,&value,&key_len,&value_len);
+                    continue;
+                }
+            }
+        }
+
         /* Emit a two elements array for each item. The first is
          * the ID, the second is an array of field-value pairs. */
         addReplyArrayLen(c,2);
         addReplyStreamID(c,&id);
 
         addReplyArrayLen(c,numfields*2);
+        
+        if (readfirstloop) {
+            addReplyBulkCBuffer(c,key,key_len);
+            addReplyBulkCBuffer(c,value,value_len);
+            numfields--;
+        }
 
         /* Emit the field-value pairs. */
         while(numfields--) {
@@ -1598,6 +1633,8 @@ void xreadCommand(client *c) {
     int xreadgroup = sdslen(c->argv[0]->ptr) == 10; /* XREAD or XREADGROUP? */
     robj *groupname = NULL;
     robj *consumername = NULL;
+    int dofilter = 0;
+    char* filter = NULL;
 
     /* Parse arguments. */
     for (int i = 1; i < c->argc; i++) {
@@ -1647,6 +1684,10 @@ void xreadCommand(client *c) {
                 return;
             }
             noack = 1;
+        } else if (!strcasecmp(o,"FILTER") && moreargs >= 1) {
+            i++;
+            filter = (char*)c->argv[i]->ptr;
+            dofilter = 1;
         } else {
             addReplyErrorObject(c,shared.syntaxerr);
             return;
@@ -1801,6 +1842,22 @@ void xreadCommand(client *c) {
             int flags = 0;
             if (noack) flags |= STREAM_RWR_NOACK;
             if (serve_history) flags |= STREAM_RWR_HISTORY;
+
+            /* If first char in ~xfilter~ is non-zero,
+             * Then it indicate filter rules will make effect 
+             * otherwise it will always keep with zero value */
+            c->bpop.xfilter[0] = '\0';
+            if (dofilter) {
+                char* src = filter; int i = 0;
+                for(; i < MAX_LEN_FILTER && *src != '\0'; ++i) {
+                    c->bpop.xfilter[i] = *src++;
+                }
+                c->bpop.xfilter[i] = '\0';
+                if (*src != '\0') {
+                    c->bpop.xfilter[0] = '\0';
+                }
+            }
+
             streamReplyWithRange(c,s,&start,NULL,count,0,
                                  groups ? groups[i] : NULL,
                                  consumer, flags, &spi);
@@ -1825,6 +1882,20 @@ void xreadCommand(client *c) {
             addReplyNullArray(c);
             goto cleanup;
         }
+
+        c->bpop.xfilter[0] = '\0';
+        if (dofilter) {
+            char* src = filter; int i = 0;
+            for(; i < MAX_LEN_FILTER && *src != '\0'; ++i) {
+                c->bpop.xfilter[i] = *src++;
+            }
+            c->bpop.xfilter[i] = '\0';
+            if (*src != '\0') {
+                c->bpop.xfilter[0] = '\0';
+                goto cleanup;
+            }
+        }
+
         blockForKeys(c, BLOCKED_STREAM, c->argv+streams_arg, streams_count,
                      timeout, NULL, NULL, ids);
         /* If no COUNT is given and we block, set a relatively small count:

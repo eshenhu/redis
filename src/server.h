@@ -270,7 +270,7 @@ extern int configOOMScoreAdjValuesDefaults[CONFIG_OOM_COUNT];
 #define CLIENT_DENY_BLOCKING (1ULL<<41) /* Indicate that the client should not be blocked.
                                            currently, turned on inside MULTI, Lua, RM_Call,
                                            and AOF client */
-
+#define CLIENT_REPLY_DRYRUN (1ULL<<42)  /* Dry run on filling data into client reply buffer */
 /* Client block type (btype field in client structure)
  * if CLIENT_BLOCKED flag is set. */
 #define BLOCKED_NONE 0    /* Not blocked, no CLIENT_BLOCKED flag set. */
@@ -479,6 +479,8 @@ typedef enum {
 #define serverAssert(_e) ((_e)?(void)0 : (_serverAssert(#_e,__FILE__,__LINE__),redis_unreachable()))
 #define serverPanic(...) _serverPanic(__FILE__,__LINE__,__VA_ARGS__),redis_unreachable()
 
+/* Maximum supported lenght of filter */
+#define MAX_LEN_FILTER 64-1
 /*-----------------------------------------------------------------------------
  * Data types
  *----------------------------------------------------------------------------*/
@@ -727,6 +729,7 @@ typedef struct multiState {
     time_t minreplicas_timeout; /* MINREPLICAS timeout as unixtime. */
 } multiState;
 
+
 /* This structure holds the blocking operation state for a client.
  * The fields used depend on client->btype. */
 typedef struct blockingState {
@@ -752,6 +755,7 @@ typedef struct blockingState {
     robj *xread_consumer;   /* XREADGROUP consumer name. */
     mstime_t xread_retry_time, xread_retry_ttl;
     int xread_group_noack;
+    char xfilter[MAX_LEN_FILTER + 1];
 
     /* BLOCKED_WAIT */
     int numreplicas;        /* Number of replicas we are waiting for ACK. */
@@ -761,6 +765,7 @@ typedef struct blockingState {
     void *module_blocked_handle; /* RedisModuleBlockedClient structure.
                                     which is opaque for the Redis core, only
                                     handled in module.c. */
+
 } blockingState;
 
 /* The following structure represents a node in the server.ready_keys list,
@@ -1780,6 +1785,9 @@ void addReplySetLen(client *c, long length);
 void addReplyAttributeLen(client *c, long length);
 void addReplyPushLen(client *c, long length);
 void addReplyHelp(client *c, const char **help);
+void ReplyPrepare(client *c);
+void ReplyCommit(client *c);
+void ReplyRollback(client *c);
 void addReplySubcommandSyntaxError(client *c);
 void addReplyLoadedModules(client *c);
 void copyClientOutputBuffer(client *dst, client *src);

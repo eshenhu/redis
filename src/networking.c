@@ -266,7 +266,7 @@ int prepareClientToWrite(client *c) {
      * not install a write handler. Instead, it will be done by
      * handleClientsWithPendingReadsUsingThreads() upon return.
      */
-    if (!clientHasPendingReplies(c) && !(c->flags & CLIENT_PENDING_READ))
+    if (!clientHasPendingReplies(c) && !(c->flags & CLIENT_PENDING_READ) && !(c->flags & CLIENT_REPLY_DRYRUN))
             clientInstallWriteHandler(c);
 
     /* Authorize the caller to queue in the output buffer of this client. */
@@ -897,6 +897,23 @@ void addReplySubcommandSyntaxError(client *c) {
         "Unknown subcommand or wrong number of arguments for '%s'. Try %s HELP.",
         (char*)c->argv[1]->ptr,cmd);
     sdsfree(cmd);
+}
+
+void ReplyPrepare(client *c) {
+    c->flags |= CLIENT_REPLY_DRYRUN;
+}
+
+void ReplyCommit(client *c) {
+    c->flags &= ~CLIENT_REPLY_DRYRUN;
+    if (!(c->flags & CLIENT_PENDING_READ))
+        clientInstallWriteHandler(c);
+}
+
+void ReplyRollback(client *c) {
+    c->flags &= ~CLIENT_REPLY_DRYRUN;
+    listEmpty(c->reply);
+    c->reply_bytes = 0;
+    c->bufpos = 0;
 }
 
 /* Append 'src' client output buffers into 'dst' client output buffers.
